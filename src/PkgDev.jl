@@ -2,66 +2,51 @@ __precompile__()
 
 module PkgDev
 
-using Compat, Compat.Pkg, Compat.LibGit2
+using LibGit2
+import Pkg
 
-export Entry, Generate, GitHub
+struct PkgDevError
+    msg::String
+end
+
+Base.show(io::IO, err::PkgDevError) = print(io, err.msg)
+
+# remove extension .jl
+splitjl(pkg::AbstractString) = endswith(pkg, ".jl") ? pkg[1:end-3] : pkg
 
 include("utils.jl")
 include("github.jl")
-include("entry.jl")
+include("Registry.jl")
 include("license.jl")
 include("generate.jl")
 
-const cd = Pkg.Dir.cd
+add_project(pkgdir::String) = Generate.create_project_from_require(pkgdir)
 
-# remove extension .jl
-const PKGEXT = ".jl"
-splitjl(pkg::AbstractString) = endswith(pkg, PKGEXT) ? pkg[1:end-length(PKGEXT)] : pkg
+defaut_reg = joinpath(Pkg.depots1(), "registries", "General")
 
 """
-    dir(pkg, [paths...])
+    register(pkgdir; [commit, registry, url])
 
-Return package `pkg` directory location through search. Additional `paths` are appended.
+Register package at `pkgdir` at `commit` into the registry at `registry`. If
+not provided, `commit` defaults to the current commit of the `pkg` repo,
+`registry` defaults to the General registry and `url` defaults to the url of the
+`origin` remote.
 """
-function dir(pkg::AbstractString)
-    pkg = splitjl(pkg)
-    if isdefined(Base, :find_in_path)
-        pkgsrc = Base.find_in_path(pkg, Pkg.dir())
-    else
-        pkgsrc = Base.find_package(pkg)
-    end
-    pkgsrc === nothing && return ""
-    abspath(dirname(pkgsrc), "..") |> realpath
-end
-dir(pkg::AbstractString, args...) = normpath(dir(pkg),args...)
+register(pkgdir::AbstractString; commit=nothing, registry=default_reg(), url=nothing ) =
+    Registry.register(registry, pkgdir; commit=commit, url=url)
 
 """
-    register(pkg, [url])
+    tag(pkgdir; [commit, registry])
 
-Register `pkg` at the git URL `url`, defaulting to the configured  origin URL of the git
-repo `Pkg.dir(pkg)`.
+Tag `commit` of package at `pkgdir` into the registry at `registry`. If
+not provided, `commit` defaults to the current commit of the `pkg` repo
+and `registry` defaults to the General registry.
 """
-register(pkg::AbstractString) = Entry.register(splitjl(pkg))
-register(pkg::AbstractString, url::AbstractString) = Entry.register(splitjl(pkg),url)
+tag(pkgdir::AbstractString; commit = nothing, registry=default_reg()) =
+    Registry.tag(registry, pkgdir; commit=commit)
 
-"""
-    tag(pkg, [ver, [commit]])
 
-Tag `commit` as version `ver` of package `pkg` and create a version  entry in `METADATA`. If
-not provided, `commit` defaults to the current  commit of the `pkg` repo. If `ver` is one of
-the symbols `:patch`,  `:minor`, `:major` the next patch, minor or major version is used. If
-`ver` is not provided, it defaults to `:patch`.
-"""
-tag(pkg::AbstractString, sym::Symbol=:patch) = cd(Entry.tag,splitjl(pkg),sym)
-tag(pkg::AbstractString, sym::Symbol, commit::AbstractString) = cd(Entry.tag,splitjl(pkg),sym,false,commit)
-
-tag(pkg::AbstractString, ver::VersionNumber; force::Bool=false) = cd(Entry.tag,splitjl(pkg),ver,force)
-tag(pkg::AbstractString, ver::VersionNumber, commit::AbstractString; force::Bool=false) =
-    cd(Entry.tag,splitjl(pkg),ver,force,commit)
-
-submit(pkg::AbstractString) = cd(Entry.submit, splitjl(pkg))
-submit(pkg::AbstractString, commit::AbstractString) = cd(Entry.submit,splitjl(pkg),commit)
-
+#=
 """
     publish()
 
@@ -76,25 +61,26 @@ Optionally, function accepts a name for a pull request branch. If it  isn't prov
 will be automatically generated.
 """
 publish(prbranch::AbstractString="") = Entry.publish(Pkg.Dir.getmetabranch(), prbranch)
+=#
 
 @doc raw"""
-    generate(pkg,license)
+    generate(pkgdir, license)
 
 Generate a new package named `pkg` with one of these license keys:  `"MIT"`, `"BSD"`,
 `"ASL"`, `"MPL"`, `"GPL-2.0+"`, `"GPL-3.0+"`,  `"LGPL-2.1+"`, `"LGPL-3.0+"`. If you want to
 make a package with a  different license, you can edit it afterwards.
 
-Generate creates a git repo at `Pkg.dir(pkg)` for the package and  inside it `LICENSE.md`,
-`README.md`, `REQUIRE`, and the julia  entrypoint `$pkg/src/$pkg.jl`. Travis, AppVeyor CI
+Generate creates a git repo at `pkgdir` for the package and inside it `LICENSE.md`,
+`README.md`, `Project.toml`, and the julia entrypoint `$pkg/src/$pkg.jl`. Travis, AppVeyor CI
 configuration files `.travis.yml` and `appveyor.yml` with code coverage statistics using
-Coveralls or Codecov are created by default, but each can be disabled  individually by
+Codecov is created by default, but each can be disabled individually by
 setting `travis`, `appveyor` or `coverage` to `false`.
 """
 generate(pkg::AbstractString, license::AbstractString;
          force::Bool=false, authors::Union{AbstractString,Array} = [],
-         config::Dict=Dict(), path::AbstractString = Pkg.Dir.path(),
-         travis::Bool = true, appveyor::Bool = true, coverage::Bool = true) =
-    Generate.package(splitjl(pkg), license, force=force, authors=authors, config=config, path=path,
+         config::Dict=Dict(), travis::Bool = true, appveyor::Bool = true,
+         coverage::Bool = true) =
+    Generate.package(splitjl(pkg), license, force=force, authors=authors, config=config,
                      travis=travis, appveyor=appveyor, coverage=coverage)
 
 """
@@ -113,7 +99,7 @@ function config(force::Bool=false)
 
         username = LibGit2.get(cfg, "user.name", "")
         if isempty(username) || force
-            username = LibGit2.prompt("Enter user name", default=username)
+            username = Base.prompt("Enter user name", default=username)
             LibGit2.set!(cfg, "user.name", username)
         else
             println("User name: $username")
@@ -121,7 +107,7 @@ function config(force::Bool=false)
 
         useremail = LibGit2.get(cfg, "user.email", "")
         if isempty(useremail) || force
-            useremail = LibGit2.prompt("Enter user email", default=useremail)
+            useremail = Base.prompt("Enter user email", default=useremail)
             LibGit2.set!(cfg, "user.email", useremail)
         else
             println("User email: $useremail")
@@ -130,7 +116,7 @@ function config(force::Bool=false)
         # setup github account
         ghuser = LibGit2.get(cfg, "github.user", "")
         if isempty(ghuser) || force
-            ghuser = LibGit2.prompt("Enter GitHub user", default=(isempty(ghuser) ? username : ghuser))
+            ghuser = Base.prompt("Enter GitHub user", default=(isempty(ghuser) ? username : ghuser))
             LibGit2.set!(cfg, "github.user", ghuser)
         else
             println("GitHub user: $ghuser")
@@ -138,23 +124,9 @@ function config(force::Bool=false)
     finally
         finalize(cfg)
     end
-    lowercase(LibGit2.prompt("Do you want to change this configuration?", default="N")) == "y" && config(true)
+    lowercase(Base.prompt("Do you want to change this configuration?", default="N")) == "y" && config(true)
     return
 end
-
-"""
-    freeable([io::IO=STDOUT])
-
-Return a list of packages which are good candidates for `Pkg.free`. These are packages for
-which you are not tracking the tagged release, but for which a tagged release is equivalent
-to the current version. You can use `Pkg.free(PkgDev.freeable())` to automatically free all
-such packages.
-
-This also prints (to `io`, defaulting to standard output) a list of packages that are ahead
-of a tagged release, and prints the number of commits that separate them. It can help
-discover packages that may be due for tagging.
-"""
-freeable(args...) = cd(Entry.freeable, args...)
 
 function __init__()
     # Check if git configuration exists
@@ -162,8 +134,8 @@ function __init__()
     try
         username = LibGit2.get(cfg, "user.name", "")
         if isempty(username)
-            Compat.@warn("PkgDev.jl is not configured. Please, run `PkgDev.config()` " *
-                         "before performing any operations.")
+            @warn("PkgDev.jl is not configured. Please, run `PkgDev.config()` " *
+                  "before performing any operations.")
         end
     finally
         finalize(cfg)
